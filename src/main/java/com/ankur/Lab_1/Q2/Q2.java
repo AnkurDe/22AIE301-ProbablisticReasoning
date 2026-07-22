@@ -2,6 +2,8 @@ package com.ankur.Lab_1.Q2;
 
 import java.util.Arrays;
 
+import static com.ankur.Commons.Random.diceThrow;
+
 /**
  * Assume that a person stands at position 0 at time 0. He throws a fair sided die. If he gets an even
  * number, he will take that many steps forward. In other words, if he gets 2, he takes two steps forward.
@@ -22,13 +24,13 @@ class WalkingMan {
 
     }
 
-    private static int random(final int lowerBound, final int higherBound) {
-        return (int) (Math.random() * ((higherBound - lowerBound) + 1)) + lowerBound;
-    }
+//    private static int random(final int lowerBound, final int higherBound) {
+//        return (int) (Math.random() * ((higherBound - lowerBound) + 1)) + lowerBound;
+//    }
 
-    private static int genDice() {
-        return random(1, 6);
-    }
+//    private static int genDice() {
+//        return random(1, 6);
+//    }
 
     public void run() {
         this.minVal = -5 * noSteps;
@@ -38,7 +40,7 @@ class WalkingMan {
         for (int i = 0; i < this.runs; i++) {
             int pos = 0;
             for (int j = 0; j < this.noSteps; j++) {
-                int step = genDice();
+                int step = diceThrow();
 
                 // Logic for even odd detection
                 // Checking for odd by logic number & 1 == 1 means odd
