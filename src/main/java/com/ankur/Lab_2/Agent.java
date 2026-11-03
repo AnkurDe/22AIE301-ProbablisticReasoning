@@ -215,7 +215,7 @@ public class Agent {
             System.out.println("Path avoids all suspected dangers");
         }
 
-        System.out.println("Solution path:");
+        System.out.println("Ans path:");
         for (int i = 0; i < solutionPath.size(); i++) {
             Pos p = solutionPath.get(i);
             System.out.println((i + 1) + ". (" + p.x + ", " + p.y + ")");
