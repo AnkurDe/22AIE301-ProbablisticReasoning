@@ -42,8 +42,8 @@ RANDOM_SEED = 42
 COVARIANCE_REGULARIZATION = 1e-4
 
 # MRF pairwise penalty. Increase it for smoother segmentations.
-MRF_LAMBDA = 2.0
-MRF_ITERATIONS = 8
+MRF_LAMBDA = 1000.0
+MRF_ITERATIONS = 100
 
 # Images in this dataset are scaled approximately from 0 to 100.
 # Dividing by 100 keeps feature values in a convenient range.
@@ -51,7 +51,7 @@ INTENSITY_SCALE = 100.0
 
 # A voxel is considered part of the brain if either modality has
 # an intensity above this threshold after scaling.
-BRAIN_THRESHOLD = 0.01
+BRAIN_THRESHOLD = 0.02
 
 
 # ----------------------------- File handling -----------------------------
@@ -69,9 +69,60 @@ def subject_id_from_name(filename):
 
 
 def load_nifti(path):
-    image = nib.load(str(path))
-    data = image.get_fdata(dtype=np.float32)
-    return image, data
+    """
+    Dataset-specific NIfTI loader.
+
+    These files declare vox_offset=348 and store their voxel payload after
+    the 348-byte header. MRI values are already approximately [0, 100] and
+    lesion labels are already 0, 1, or 2. The supplied scl_slope/scl_inter
+    fields are inconsistent with those stored values; applying them turns
+    MRI intensities into a narrow range around 50 and breaks brain masking.
+
+    Repair a temporary copy: insert four padding bytes, set vox_offset=352,
+    and disable scaling (slope=1, intercept=0). Original files are untouched.
+    """
+    import os
+    import struct
+    import tempfile
+
+    path = str(path)
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    if len(raw) < 348:
+        raise ValueError(f"File is too small to be a NIfTI-1 image: {path}")
+
+    little = struct.unpack("<i", raw[:4])[0]
+    big = struct.unpack(">i", raw[:4])[0]
+    if little == 348:
+        endian = "<"
+    elif big == 348:
+        endian = ">"
+    else:
+        raise ValueError(f"Unsupported NIfTI-1 header: {path}")
+
+    vox_offset = struct.unpack(endian + "f", raw[108:112])[0]
+
+    if vox_offset < 352:
+        print(f"[FIX] Repairing NIfTI header/scaling: {os.path.basename(path)}")
+        repaired = bytearray(raw[:348] + b"\x00" * 4 + raw[348:])
+        struct.pack_into(endian + "f", repaired, 108, 352.0)
+        struct.pack_into(endian + "f", repaired, 112, 1.0)
+        struct.pack_into(endian + "f", repaired, 116, 0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".nii") as temp:
+            temp.write(repaired)
+            temp.flush()
+            image = nib.load(temp.name)
+            data = image.get_fdata(dtype=np.float32)
+            detached_image = nib.Nifti1Image(
+                data.copy(), image.affine.copy(), image.header.copy()
+            )
+        return detached_image, data
+
+    image = nib.load(path)
+    return image, image.get_fdata(dtype=np.float32)
+
 
 def find_subject_files(directory, include_masks):
     """Pair T1, T2, and optionally lesion-mask files by subject ID."""
@@ -210,9 +261,32 @@ def train_models(training_subjects):
         if lesion_mask.shape != brain_mask.shape:
             raise ValueError(f"Mask shape mismatch for {sid}")
 
-        # The supplied mask is binary. Values > 0 are treated as lesions.
-        diseased_mask = (lesion_mask > 0.5) & brain_mask
+        # The lesion masks use NIfTI intensity scaling, and the scaling
+        # factor differs between subjects. Therefore, a fixed threshold
+        # such as 0.5 is incorrect. The non-zero label values are encoded
+        # close to the mask maximum (subject 3 contains labels 1 and 2).
+        mask_max = float(np.nanmax(lesion_mask))
+        if not np.isfinite(mask_max) or mask_max <= 0:
+            raise RuntimeError(
+                f"Lesion mask for {sid} contains no positive labels. "
+                f"Check the mask file and NIfTI scaling."
+            )
+
+        # Use half the maximum to separate background (approximately zero)
+        # from all positive lesion labels, including labels 1 and 2.
+        lesion_threshold = 0.5 * mask_max
+        diseased_mask = (lesion_mask > lesion_threshold) & brain_mask
         healthy_mask = brain_mask & ~diseased_mask
+
+        print(
+            f"  Mask max: {mask_max:.8g}, "
+            f"lesion threshold: {lesion_threshold:.8g}"
+        )
+        print(
+            f"  Brain voxels: {np.count_nonzero(brain_mask):,}; "
+            f"lesion voxels: {np.count_nonzero(diseased_mask):,}; "
+            f"non-lesion brain voxels: {np.count_nonzero(healthy_mask):,}"
+        )
 
         h = sample_class_features(
             features, healthy_mask,
